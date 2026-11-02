@@ -1,0 +1,10 @@
+{
+    "name": "moodle-availability_sectionlimit-form",
+    "builds": {
+        "moodle-availability_sectionlimit-form": {
+            "jsfiles": [
+                "form.js"
+            ]
+        }
+    }
+}

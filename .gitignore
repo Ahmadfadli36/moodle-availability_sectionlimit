@@ -1,0 +1,8 @@
+Thumbs.db
+.DS_Store
+.vscode/
+*.swp
+node_modules/
+cli/clear.php
+cli/open_dates.php
+cli/reset_user.php
