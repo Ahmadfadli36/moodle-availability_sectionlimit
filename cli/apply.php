@@ -18,7 +18,7 @@
  * CLI script: add (or remove) the section limit restriction on sections or on chosen activity types in many courses.
  *
  * @package    availability_sectionlimit
- * @copyright  2026 Ahmad Fadli
+ * @copyright  2026
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
@@ -36,6 +36,9 @@ require_once($CFG->dirroot . '/course/lib.php');
     'max' => 4,
     'modules' => '',
     'skip-sections' => '0',
+    'skip-section-names' => '',
+    'exclude-name' => '',
+    'exclude-courseids' => '',
     'hide' => false,
     'remove' => false,
     'dry-run' => false,
@@ -62,6 +65,14 @@ Options:
   --max=4               Maximum sections per student (default 4)
   --skip-sections=0     Comma separated section numbers to leave alone (default 0, the general section).
                         Example: --skip-sections=0,8,16 to also skip sections 8 and 16.
+  --skip-section-names=UTS,UAS
+                        Also skip every section whose name is one of these (case-insensitive), whatever its
+                        number. Use this when exam sections sit at different positions in different courses.
+  --exclude-name='Bahasa Inggris'
+                        Leave out every course whose full or short name contains this text
+                        (comma separated list, case-insensitive). Excluded courses are listed as EXCLUDED.
+  --exclude-courseids=5,6
+                        Leave out these course ids
   --hide                Hide locked items entirely instead of showing them greyed out
   --remove              Remove the condition instead of adding it (use the same --modules as when adding)
   --dry-run             Show what would change without saving
@@ -72,6 +83,7 @@ Examples:
   php availability/condition/sectionlimit/cli/apply.php --courseids=314 --modules=forum,quiz --skip-sections=0,8,16
   php availability/condition/sectionlimit/cli/apply.php --courseids=314 --remove
   php availability/condition/sectionlimit/cli/apply.php --courseids=314 --modules=forum,quiz --remove
+  php availability/condition/sectionlimit/cli/apply.php --all --modules=forum,quiz --skip-section-names=UTS,UAS --exclude-name='Bahasa Inggris' --dry-run
 ";
     exit(0);
 }
@@ -84,6 +96,11 @@ $skip = array_filter(array_map('trim', explode(',', (string)$options['skip-secti
 $skip = array_map('intval', $skip);
 $modulenames = array_values(array_filter(array_map('trim', explode(',', (string)$options['modules'])), 'strlen'));
 $dryrun = (bool)$options['dry-run'];
+$skipnames = array_map(function($name) {
+    return core_text::strtolower(trim($name));
+}, array_filter(explode(',', (string)$options['skip-section-names']), 'strlen'));
+$excludenames = array_values(array_filter(array_map('trim', explode(',', (string)$options['exclude-name'])), 'strlen'));
+$excludeids = array_map('intval', array_filter(explode(',', (string)$options['exclude-courseids']), 'strlen'));
 
 // Work out the courses.
 if ($options['courseids']) {
@@ -185,12 +202,26 @@ foreach ($courseids as $courseid) {
         continue;
     }
 
+    // Courses that must be left alone.
+    if (in_array((int)$course->id, $excludeids, true)) {
+        mtrace(sprintf('Course %d (%s): EXCLUDED (course id)', $course->id, $course->shortname));
+        continue;
+    }
+    $haystack = core_text::strtolower($course->fullname . ' ' . $course->shortname);
+    foreach ($excludenames as $needle) {
+        if (core_text::strpos($haystack, core_text::strtolower($needle)) !== false) {
+            mtrace(sprintf('Course %d (%s): EXCLUDED (name contains "%s") - %s', $course->id, $course->shortname,
+                $needle, $course->fullname));
+            continue 2;
+        }
+    }
+
     // Collect the things that get (or lose) the restriction: sections, or activities of the chosen types.
     $targets = [];
     if ($modulenames) {
         [$insql, $params] = $DB->get_in_or_equal($modulenames, SQL_PARAMS_NAMED);
         $params['course'] = $course->id;
-        $sql = "SELECT cm.id, cm.availability, cs.section AS sectionnum, cs.component
+        $sql = "SELECT cm.id, cm.availability, cs.section AS sectionnum, cs.component, cs.name AS sectionname
                   FROM {course_modules} cm
                   JOIN {modules} m ON m.id = cm.module
                   JOIN {course_sections} cs ON cs.id = cm.section
@@ -198,19 +229,23 @@ foreach ($courseids as $courseid) {
               ORDER BY cs.section, cm.id";
         foreach ($DB->get_records_sql($sql, $params) as $row) {
             $targets[] = (object)['table' => 'course_modules', 'id' => $row->id, 'availability' => $row->availability,
-                'sectionnum' => (int)$row->sectionnum, 'component' => $row->component];
+                'sectionnum' => (int)$row->sectionnum, 'component' => $row->component,
+                'sectionname' => (string)$row->sectionname];
         }
     } else {
         foreach ($DB->get_records('course_sections', ['course' => $course->id], 'section') as $section) {
             $targets[] = (object)['table' => 'course_sections', 'id' => $section->id,
                 'availability' => $section->availability, 'sectionnum' => (int)$section->section,
-                'component' => $section->component ?? null];
+                'component' => $section->component ?? null, 'sectionname' => (string)$section->name];
         }
     }
 
     $count = 0;
     foreach ($targets as $target) {
         if (in_array($target->sectionnum, $skip, true)) {
+            continue;
+        }
+        if ($skipnames && in_array(core_text::strtolower(trim($target->sectionname)), $skipnames, true)) {
             continue;
         }
         // Skip anything that belongs to a subsection activity (Moodle 4.5+).
